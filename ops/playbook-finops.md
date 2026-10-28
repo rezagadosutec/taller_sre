@@ -53,37 +53,43 @@ Preguntas:
 
 ## 1. ¿Cuánto cuesta una corrida?
 
-| Stage | Minutos (Actions) | Minutos de warehouse (`ops_event_log`) | Costo estimado |
-| --- | --- | --- | --- |
-| deploy | [ ... ] | [ ... ] | [ ... ] |
-| bronze | [ ... ] | [ ... ] | [ ... ] |
-| ref | [ ... ] | [ ... ] | [ ... ] |
-| silver | [ ... ] | [ ... ] | [ ... ] |
-| validation | [ ... ] | [ ... ] | [ ... ] |
-| gold | [ ... ] | [ ... ] | [ ... ] |
-| tests | [ ... ] | — | [ ... ] |
-| **Total por corrida** | | | [ ... ] |
+El workflow tiene **7 jobs facturables de Actions**: `deploy`, `bronze`, `ref`, `silver`, `validation`, `gold` y `tests`. `bronze` y `ref` corren en paralelo; `gold` y `tests` también. Anoten la duración de cada job en una corrida real de Actions. El log de eventos sirve para ubicar etapas, pero sus marcas son de fin de job, no duración exacta de consultas.
 
-- ¿Cuántas veces corre al mes? ¿Por qué se dispara? [ ... ]
-- Costo mensual estimado: [ ... ]
+| Stage/job | Minutos de Actions (medir) | Intervalo entre eventos (min, orientativo) | Costo de Actions |
+| --- | --- | --- | --- |
+| deploy | medir en Actions | medir con query 9 | `ceil(min) × USD 0.006` |
+| bronze | medir en Actions | medir con query 9 | `ceil(min) × USD 0.006` |
+| ref | medir en Actions | medir con query 9 | `ceil(min) × USD 0.006` |
+| silver | medir en Actions | medir con query 9 | `ceil(min) × USD 0.006` |
+| validation | medir en Actions | medir con query 9 | `ceil(min) × USD 0.006` |
+| gold | medir en Actions | medir con query 9 | `ceil(min) × USD 0.006` |
+| tests (no usa Databricks) | medir en Actions | — | `ceil(min) × USD 0.006` |
+| **Total por corrida** | sumar los 7 jobs | query 10, más auto-stop | sumar Actions + warehouse |
+
+**Cálculo:** costo de Actions = `USD 0.006 × suma(ceil(duración de cada job en minutos))`. Como piso, si cada job dura menos de un minuto, son 7 minutos facturados = **USD 0.042 por corrida**; la duración real se consulta en Actions. El costo estimado del warehouse es `USD 2.80 × minutos encendido / 60`, incluyendo los 10 minutos de auto-stop. `ops_event_log` es una aproximación: para el consumo cobrado usen `system.billing.usage` y multipliquen los DBU por USD 0.70. No sumen otra vez esos DBU al cálculo estimado.
+
+El workflow corre por `push` a `main` si cambia `data/**`, `framework/**` o el propio workflow, y también por ejecución manual. No tiene una frecuencia mensual fija: cuenten las corridas completadas de los últimos 30 días en Actions y multipliquen por el costo medio por corrida. **Costo mensual estimado = corridas del mes × costo medio por corrida.** El repo no contiene el historial de ejecuciones ni las marcas de Databricks; por eso no sería fiable inventar un total mensual.
 
 ## 2. ¿Cuánto costó el incidente?
 
-- Corridas extra (preparar, reprocesos, pruebas): [ ... ]
-- Horas-persona: [ personas ] × [ MTTR ] = [ ... ]
-- ¿Cuánto habría costado recargar todo en vez de lo que hicieron? [ ... ]
+Contabilicen las ejecuciones extraordinarias desde que empezó el incidente hasta el primer `Game day – Verificar` verde. Incluyan preparación, intentos fallidos, reprocesos y verificaciones manuales que hayan usado el warehouse; no cuenten la corrida normal como costo incremental.
+
+- Corridas extra: contar en Actions. **Costo de cómputo incremental = corridas extra × costo por corrida medido en la sección 1.**
+- Trabajo humano: sumar las horas efectivas de cada participante. **Costo de horas-persona = horas totales × USD 25.** Si todos trabajaron el mismo tiempo, es `personas × horas por persona × USD 25`.
+- **Costo total del incidente = cómputo incremental + horas-persona.** Anoten por separado el MTTR transcurrido y las horas-persona: no son lo mismo.
+- Comparación de recuperación: una recarga completa vuelve a leer todos los CSV de `data/source/`, recrea el catálogo y recalcula Gold; Silver usa `MERGE` por `customer_id`. Comparen el costo de esa corrida completa con el reproceso selectivo que realmente hicieron usando las ejecuciones y DBU observados. Sin esos registros no se puede afirmar un ahorro numérico.
 
 ## 3. ¿Quién es el dueño?
 
 El dueño no se escribe en un Excel: se deja **en el recurso**, con tags, igual
 que en Azure o AWS. Así un reporte de costos lo puede leer solo.
 
-- ¿Quién usa `gold_contactables_por_pais`? ¿Quién debería responder por su costo? [ ... ]
+- `gold_contactables_por_pais` lo consume Marketing. El dueño propuesto del costo y del pipeline es el **equipo de datos (`data-platform`)**; Marketing es el consumidor. Confirmen el equipo responsable en el PR antes de aplicar los tags.
 - Tagueen la tabla desde el código (por ejemplo en `deploy_silver_v2.sql`, para que se aplique en cada deploy):
 
   ```sql
   ALTER TABLE gameday.gold_contactables_por_pais
-    SET TAGS ('owner' = '[ equipo o persona ]', 'cost_center' = '[ ... ]', 'consumer' = 'marketing');
+    SET TAGS ('owner' = 'data-platform', 'cost_center' = 'taller-sre', 'consumer' = 'marketing');
   ```
 
 - Compruébenlo con una query, no a ojo:
@@ -96,20 +102,23 @@ que en Azure o AWS. Así un reporte de costos lo puede leer solo.
 
 - Política como código: el workflow **FinOps – Política de tags** corre después de
   cada pipeline y **falla si una tabla Gold no tiene tag `owner`**. Si lo corren hoy, sale en rojo.
-  Déjenlo en verde (también lo pueden correr a mano desde Actions).
+  Añadan el tag, compruébenlo con la query y ejecuten **FinOps – Política de tags** desde Actions; el resultado esperado es verde.
 
 - Los tags de una tabla sirven para gobierno, pero **no** aparecen en la factura.
   Para atribuir costo, el tag va en lo que consume: el SQL Warehouse (sección
-  *Tags* al editarlo). Ese tag llega a `system.billing.usage.custom_tags`.
-  ¿Qué tags le pondrían al warehouse? ¿Qué pasa si dos equipos comparten el mismo? [ ... ]
+  *Tags* al editarlo): `owner=data-platform`, `cost_center=taller-sre` y
+  `environment=workshop`. Ese tag llega a `system.billing.usage.custom_tags`.
+  Si dos equipos comparten warehouse, el consumo se atribuye al recurso compartido,
+  no a cada equipo; separen warehouses o usen un mecanismo de imputación por equipo.
 
 ## 4. ¿Qué deciden?
 
-> Busquen en el repo algo que cueste sin generar valor (pista: miren cuándo se
-> dispara el pipeline y qué hace cada stage en cada corrida).
+> Hallazgo: `data/**` dispara el pipeline, pero Bronze solo lee `data/source/`.
+> Por tanto, añadir o editar un archivo en `data/incoming/` dispara una corrida
+> que no ingiere ese lote. Además, `framework/**` incluye documentación y tests.
 
 | Costo oculto que encontramos | Decisión (apagar / ajustar / priorizar) | Dueño | Fecha |
 | --- | --- | --- | --- |
-| [ ... ] | [ ... ] | [ ... ] | [ ... ] |
+| Push a `data/incoming/` (y cambios no ejecutables en `framework/`) inicia jobs aunque no cambie lo que procesa el pipeline. | Ajustar los filtros `paths` para incluir `data/source/**`, `data/ref/**`, `framework/{deployment,ingestion,processing,validation,monitoring,tests}/**` y el workflow; mantener `workflow_dispatch` para reprocesos intencionales. Revisar la frecuencia de corridas después del cambio. | Equipo de datos (`data-platform`) | 2026-10-28 |
 
-Bonus (opcional): implementen la decisión en el workflow y muestren la diferencia.
+Bonus (opcional): implementen la decisión en el workflow y comparen el número de corridas y el costo mensual estimado antes y después.
