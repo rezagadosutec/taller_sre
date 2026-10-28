@@ -2,7 +2,7 @@
 
 > Sin culpables: buscamos qué falló en el proceso, no quién se equivocó.
 
-**Equipo y roles:** Comandante: [ ... ] · Operador: [ ... ] · Comunicador: [ ... ]
+**Equipo y roles:** Comandante: [ Cesar Hijar ] · Operador: [ Efren Carrillo ] · Comunicador: [ Diego Flores ] · Comunicador: [ Celso Ibarcerna ] · Especialista: [ Alex Galindo ] 
 
 ## Resumen
 
