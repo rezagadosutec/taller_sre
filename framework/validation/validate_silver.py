@@ -8,6 +8,12 @@ TOKEN = os.environ["DATABRICKS_TOKEN"]
 
 RUN_ID = os.environ.get("RUN_ID", "manual")
 SILVER_TABLE = os.environ.get("SILVER_TABLE", "gameday.silver_customers_v2")
+EXPECTED_COUNTRIES = {
+    "PE": ("Perú", "Andina"),
+    "CL": ("Chile", "Cono Sur"),
+    "AR": ("Argentina", "Cono Sur"),
+    "CO": ("Colombia", "Andina"),
+}
 
 def fetch_one(cur, stmt: str):
     cur.execute(stmt)
@@ -23,6 +29,22 @@ def main():
             total = fetch_one(cur, f"SELECT COUNT(*) FROM {SILVER_TABLE}")
             name_null = fetch_one(cur, f"SELECT COUNT(*) FROM {SILVER_TABLE} WHERE dq_is_name_null = true")
             underage = fetch_one(cur, f"SELECT COUNT(*) FROM {SILVER_TABLE} WHERE dq_is_underage = true")
+
+            cur.execute("SELECT country_code, country_name, region FROM gameday.ref_paises")
+            ref_rows = cur.fetchall()
+            ref_codes = {row[0] for row in ref_rows}
+            ref_mapping_errors = sum(
+                EXPECTED_COUNTRIES.get(code) != (name, region)
+                for code, name, region in ref_rows
+            ) + len(set(EXPECTED_COUNTRIES) - ref_codes)
+
+            cur.execute(f"SELECT country_code, country_name, region FROM {SILVER_TABLE}")
+            silver_rows = cur.fetchall()
+            silver_mapping_errors = sum(
+                EXPECTED_COUNTRIES.get(code) != (name, region)
+                for code, name, region in silver_rows
+            )
+            mapping_errors = ref_mapping_errors + silver_mapping_errors
 
             # Guarda resultados en ops_dq_results
             cur.execute(
@@ -40,7 +62,18 @@ def main():
                 (RUN_ID, SILVER_TABLE, "WARN" if underage > 0 else "PASS", float(underage), "age < 18")
             )
 
-    print(f"✅ Validation completed: total={total}, name_null={name_null}, underage={underage}")
+            cur.execute(
+                "INSERT INTO gameday.ops_dq_results VALUES (?, current_timestamp(), ?, 'country_mapping_mismatch', ?, ?, ?)",
+                (RUN_ID, SILVER_TABLE, "FAIL" if mapping_errors > 0 else "PASS", float(mapping_errors),
+                 f"ref_mismatches={ref_mapping_errors}; silver_mismatches={silver_mapping_errors}")
+            )
+
+    print(
+        f"✅ Validation completed: total={total}, name_null={name_null}, underage={underage}, "
+        f"country_mapping_mismatches={mapping_errors}"
+    )
+    if mapping_errors:
+        raise SystemExit("❌ Country mapping validation failed; Gold will not be published")
 
 if __name__ == "__main__":
     main()
